@@ -95,6 +95,10 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
         self.rollout_buffer = None
+        
+        self.state_history = []
+        self.action_history = []
+        self.reward_history = []
 
         if _init_setup_model:
             self._setup_model()
@@ -173,7 +177,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
-
+            
+            self.state_history.append(list(self._last_obs))
+            self.action_history.append(list(clipped_actions))
+            self.reward_history.append(list(rewards))
+            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/state', self.state_history)
+            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/action', self.action_history)
+            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/reward', self.reward_history)
             self.num_timesteps += env.num_envs
 
             # Give access to local variables

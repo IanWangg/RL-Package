@@ -12,6 +12,7 @@ from stable_baselines3.common.type_aliases import (
     DictRolloutBufferSamples,
     ReplayBufferSamples,
     RolloutBufferSamples,
+    RolloutBufferSamplesWithNext
 )
 from stable_baselines3.common.utils import get_device
 from stable_baselines3.common.vec_env import VecNormalize
@@ -311,7 +312,84 @@ class ReplayBuffer(BaseBuffer):
             self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
         )
         return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+    
 
+class DequeReplayBuffer(ReplayBuffer):
+    def __init__(
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+    ):
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination
+        )
+        
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        infos: List[Dict[str, Any]],
+    ) -> None:
+
+        # Reshape needed when using multiple envs with discrete observations
+        # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
+        if isinstance(self.observation_space, spaces.Discrete):
+            obs = obs.reshape((self.n_envs,) + self.obs_shape)
+            next_obs = next_obs.reshape((self.n_envs,) + self.obs_shape)
+
+        # Same, for actions
+        action = action.reshape((self.n_envs, self.action_dim))
+        
+        old_observations = self.observations[self.pos].copy()
+        old_actions = self.actions[self.pos].copy()
+        if self.optimize_memory_usage:
+            old_next_observations = self.observations[(self.pos + 1) % self.buffer_size].copy()
+        else:
+            old_next_observations = self.next_observations[self.pos].copy()
+        old_rewrads = self.rewards[self.pos].copy()
+        old_dones = self.dones[self.pos].copy()
+        
+
+        # Copy to avoid modification by reference
+        self.observations[self.pos] = np.array(obs).copy()
+
+        if self.optimize_memory_usage:
+            self.observations[(self.pos + 1) % self.buffer_size] = np.array(next_obs).copy()
+        else:
+            self.next_observations[self.pos] = np.array(next_obs).copy()
+
+        self.actions[self.pos] = np.array(action).copy()
+        self.rewards[self.pos] = np.array(reward).copy()
+        self.dones[self.pos] = np.array(done).copy()
+
+        if self.handle_timeout_termination:
+            self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
+
+        self.pos += 1
+        if self.pos == self.buffer_size:
+            self.full = True
+            self.pos = 0
+
+        return (
+            old_observations,
+            old_actions,
+            old_next_observations,
+            old_rewards,
+            old_dones
+        )
 
 class RolloutBuffer(BaseBuffer):
     """
@@ -484,6 +562,92 @@ class RolloutBuffer(BaseBuffer):
             self.returns[batch_inds].flatten(),
         )
         return RolloutBufferSamples(*tuple(map(self.to_torch, data)))
+    
+class RolloutBufferWithNext(RolloutBuffer):
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        gae_lambda: float = 1,
+        gamma: float = 0.99,
+        n_envs: int = 1,
+    ):
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            gae_lambda,
+            gamma,
+            n_envs
+        )
+        
+    def reset(self) -> None:
+        self.next_observations = np.zeros((self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32)
+        super().reset()
+    
+    def add_with_next(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        next_obs: np.ndarray,
+        reward: np.ndarray,
+        episode_start: np.ndarray,
+        value: th.Tensor,
+        log_prob: th.Tensor,
+    ):
+        if isinstance(self.observation_space, spaces.Discrete):
+            next_obs = next_obs.reshape((self.n_envs,) + self.obs_shape)
+        
+        self.next_observations[self.pos] = np.array(next_obs).copy()
+        
+        super().add(
+            obs, action, reward, episode_start, value, log_prob
+        )
+    
+    def get(self, batch_size: Optional[int] = None) -> Generator[RolloutBufferSamplesWithNext, None, None]:
+        assert self.full, ""
+        indices = np.random.permutation(self.buffer_size * self.n_envs)
+        # Prepare the data
+        if not self.generator_ready:
+
+            _tensor_names = [
+                "observations",
+                "actions",
+                "next_observations",
+                "values",
+                "log_probs",
+                "advantages",
+                "returns",
+            ]
+
+            for tensor in _tensor_names:
+                self.__dict__[tensor] = self.swap_and_flatten(self.__dict__[tensor])
+            self.generator_ready = True
+
+        # Return everything, don't create minibatches
+        if batch_size is None:
+            batch_size = self.buffer_size * self.n_envs
+
+        start_idx = 0
+        while start_idx < self.buffer_size * self.n_envs:
+            yield self._get_samples(indices[start_idx : start_idx + batch_size])
+            start_idx += batch_size
+            
+    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> RolloutBufferSamplesWithNext:
+        data = (
+            self.observations[batch_inds],
+            self.actions[batch_inds],
+            self.next_observations[batch_inds],
+            self.values[batch_inds].flatten(),
+            self.log_probs[batch_inds].flatten(),
+            self.advantages[batch_inds].flatten(),
+            self.returns[batch_inds].flatten(),
+        )
+        return RolloutBufferSamplesWithNext(*tuple(map(self.to_torch, data)))
+        
 
 
 class DictReplayBuffer(ReplayBuffer):

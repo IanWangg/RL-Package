@@ -7,9 +7,9 @@ from stable_baselines3.common.vec_env import VecFrameStack, DummyVecEnv, Subproc
 
 if __name__ == '__main__':
     env = make_atari_env(
-        'MontezumaRevengeNoFrameskip-v4', 
-        wrapper_kwargs={'montezuma': True}, 
-        n_envs=128, 
+        'SeaquestNoFrameskip-v4', 
+        wrapper_kwargs={'montezuma': False}, 
+        n_envs=16, 
         seed=0,
         vec_env_cls=SubprocVecEnv
     )

@@ -2,6 +2,7 @@ import os
 from typing import Any, Callable, Dict, Optional, Type, Union
 
 import gym
+import numpy as np
 
 from stable_baselines3.common.atari_wrappers import AtariWrapper
 from stable_baselines3.common.monitor import Monitor
@@ -34,6 +35,18 @@ def is_wrapped(env: Type[gym.Env], wrapper_class: Type[gym.Wrapper]) -> bool:
     """
     return unwrap_wrapper(env, wrapper_class) is not None
 
+class sparse_reward_wrapper(gym.RewardWrapper):
+    def __init__(self, env: gym.Env):
+        gym.RewardWrapper.__init__(self, env)
+
+    def reward(self, reward: float) -> float:
+        """
+        Bin reward to {+1, 0, -1} by its sign.
+
+        :param reward:
+        :return:
+        """
+        return max(0., reward)
 
 def make_vec_env(
     env_id: Union[str, Callable[..., gym.Env]],
