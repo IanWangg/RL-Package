@@ -67,7 +67,7 @@ class PCPG(OnPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
-        bonus_thres: float = 0.05,
+        bonus_thres: float = 0.0001,
     ):
 
         super().__init__(
@@ -95,6 +95,9 @@ class PCPG(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         )
+        
+        from stable_baselines3.common.running_mean_std import RunningMeanStd
+        self.int_rewards_normalizer = RunningMeanStd(shape=())
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -211,12 +214,21 @@ class PCPG(OnPolicyAlgorithm):
         
         if self.discrete_action:
             action = action.float().view(-1, 1)
+        # print(obs.shape, action.shape)
         cat = th.cat([obs, action], dim=1)
         uncertainty = (self.rnd_predictor(cat) - self.rnd_target(cat)).pow(2).sum(1) / 2
+        # print(uncertainty.shape)
+        
+        uncertain = uncertainty > (th.ones_like(uncertainty) * self.bonus_thres)
+        uncertain = uncertain.float()
+        return uncertain
+
+        '''
         if uncertainty < self.bonus_thres:
-            return torch.zeros_like(uncertainty)
+            return th.zeros_like(uncertainty)
         else:
-            return torch.ones_like(uncertainty)
+            return th.ones_like(uncertainty)
+        '''
             
     def collect_rollouts(
         self,
@@ -278,6 +290,9 @@ class PCPG(OnPolicyAlgorithm):
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 int_rewards = self.compute_int_rewards(obs_tensor.float(), actions_tensor.float())
                 int_rewards = int_rewards.cpu().numpy()
+                
+            # self.int_rewards_normalizer.update(int_rewards)
+            # int_rewards = int_rewards / (np.sqrt(self.int_rewards_normalizer.var + 1e-8))
 
             self.num_timesteps += env.num_envs
 
@@ -317,6 +332,8 @@ class PCPG(OnPolicyAlgorithm):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        int_values = self.int_value_head(obs_as_tensor(new_obs, self.device)).detach()
+        self.int_rollout_buffer.compute_returns_and_advantage(last_values=int_values, dones=dones)
 
         callback.on_rollout_end()
 
@@ -364,10 +381,12 @@ class PCPG(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
-                advantages = 2 * advantages + int_advantages # follow the RND original implementation
+                advantages = advantages + int_advantages # follow the RND original implementation
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                # nt_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                # advantages = 2 * advantages + int_advantages
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -396,7 +415,7 @@ class PCPG(OnPolicyAlgorithm):
                 value_losses.append(value_loss.item())
                 
                 int_values_pred = self.int_value_head(int_rollout_data.observations)
-                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred)
+                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred) * 0.5
                 int_value_losses.append(int_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -435,6 +454,7 @@ class PCPG(OnPolicyAlgorithm):
                 # update int value head
                 self.int_value_head_optimizer.zero_grad()
                 int_value_loss.backward()
+                th.nn.utils.clip_grad_norm_(self.int_value_head.parameters(), self.max_grad_norm)
                 self.int_value_head_optimizer.step()
                 
                 # update rnd predictor
@@ -446,6 +466,7 @@ class PCPG(OnPolicyAlgorithm):
                                                 self.rnd_target(cat))
                 self.rnd_optimizer.zero_grad()
                 rnd_predictor_loss.backward()
+                th.nn.utils.clip_grad_norm_(self.rnd_predictor.parameters(), self.max_grad_norm)
                 self.rnd_optimizer.step()
                 rnd_losses.append(rnd_predictor_loss.item())
 
@@ -481,6 +502,12 @@ class PCPG(OnPolicyAlgorithm):
         tb_log_name: str = "PPO",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        eval_env: GymEnv = None,
+        evaluation: bool = False,
+        eval_interval: int = 5000,
+        eval_episodes: int = 10,
+        target_folder: str = None,
+        filename: str = 'DEFAULT'
     ) -> SelfPPO:
 
         return super().learn(
@@ -490,4 +517,10 @@ class PCPG(OnPolicyAlgorithm):
             tb_log_name=tb_log_name,
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
+            eval_env=eval_env,
+            evaluation=evaluation,
+            eval_interval=eval_interval,
+            eval_episodes=eval_episodes,
+            target_folder=target_folder,
+            filename=filename
         )

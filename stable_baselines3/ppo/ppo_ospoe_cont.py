@@ -51,6 +51,8 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         n_epochs: int = 10,
         gamma: float = 0.99,
         int_gamma: float = 0.99,
+        sparse_sampling: bool = False,
+        use_extra_value_head: bool = True,
         gae_lambda: float = 0.95,
         clip_range: Union[float, Schedule] = 0.2,
         clip_range_vf: Union[None, float, Schedule] = None,
@@ -94,6 +96,9 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         )
+        
+        from stable_baselines3.common.running_mean_std import RunningMeanStd
+        self.int_rewards_normalizer = RunningMeanStd(shape=())
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -129,6 +134,12 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         
         self.rnd_learning_rate = rnd_learning_rate
         self.int_gamma = int_gamma
+        self.sparse_sampling = sparse_sampling
+        self.use_extra_value_head = use_extra_value_head
+        
+        # keep track of how many MC sampling session has been done
+        self.sampling_count = 0
+        self.max_n_steps = int(2 * self.n_steps)
 
         if _init_setup_model:
             self._setup_model()
@@ -242,7 +253,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
-
+        
         callback.on_rollout_start()
 
         while n_steps < n_rollout_steps:
@@ -271,6 +282,9 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
                 int_rewards = self.compute_int_rewards(obs_tensor.float(), actions_tensor.float())
                 int_rewards = int_rewards.cpu().numpy()
+                
+            # self.int_rewards_normalizer.update(int_rewards)
+            # int_rewards = int_rewards / (np.sqrt(self.int_rewards_normalizer.var + 1e-8))
 
             self.num_timesteps += env.num_envs
 
@@ -299,9 +313,14 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                         terminal_value = self.policy.predict_values(terminal_obs)[0]
                     rewards[idx] += self.gamma * terminal_value
 
-            rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
-            # the 
-            self.int_rollout_buffer.add(self._last_obs, actions, int_rewards, np.zeros(self._last_episode_starts.shape), int_values, log_probs)
+            # use int value head to predict intrinsic value separately
+            if self.use_extra_value_head:
+                rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
+                # add int rewards to another buffer
+                self.int_rollout_buffer.add(self._last_obs, actions, int_rewards, np.zeros(self._last_episode_starts.shape), int_values, log_probs)
+            else:
+                rollout_buffer.add(self._last_obs, actions, rewards + int_rewards, self._last_episode_starts, values, log_probs)
+            
             self._last_obs = new_obs
             self._last_episode_starts = dones
 
@@ -310,6 +329,11 @@ class OSPOEContinuous(OnPolicyAlgorithm):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
+        if self.use_extra_value_head:
+            int_values = self.int_value_head(obs_as_tensor(new_obs, self.device)).detach()
+            self.int_rollout_buffer.compute_returns_and_advantage(last_values=int_values, dones=dones)
+            
+        # update the sampling statistics if sparse sampling is enabled 
 
         callback.on_rollout_end()
 
@@ -357,10 +381,12 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
-                advantages = 2 * advantages + int_advantages # follow the RND original implementation
+                advantages = advantages + int_advantages # follow the RND original implementation
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                # advantages = 2 * advantages + int_advantages
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -389,7 +415,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 value_losses.append(value_loss.item())
                 
                 int_values_pred = self.int_value_head(int_rollout_data.observations)
-                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred)
+                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred) * 0.5
                 int_value_losses.append(int_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -428,6 +454,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 # update int value head
                 self.int_value_head_optimizer.zero_grad()
                 int_value_loss.backward()
+                th.nn.utils.clip_grad_norm_(self.int_value_head.parameters(), self.max_grad_norm)
                 self.int_value_head_optimizer.step()
                 
                 # update rnd predictor
@@ -439,6 +466,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                                                 self.rnd_target(cat))
                 self.rnd_optimizer.zero_grad()
                 rnd_predictor_loss.backward()
+                th.nn.utils.clip_grad_norm_(self.rnd_predictor.parameters(), self.max_grad_norm)
                 self.rnd_optimizer.step()
                 rnd_losses.append(rnd_predictor_loss.item())
 
@@ -463,8 +491,42 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.record("bonus/rnd_loss", rnd_losses)
-        self.logger.record("bonus/int_value_loss", int_value_losses)
+        # self.logger.record("bonus/rnd_loss", rnd_losses)
+        # self.logger.record("bonus/int_value_loss", int_value_losses)
+        if self.sparse_sampling:
+            self.logger.record("sampling/number_of_samples", self.n_steps)
+        
+        
+        if self.sparse_sampling:
+            # ratio = 1 - self.gamma ** self.sampling_count
+            self.sampling_count += 1
+            ratio = 1 - self.gamma ** self.sampling_count
+            per_env_steps = max(self.batch_size // self.n_envs, 1)
+            new_n_steps = int(max(int(ratio * self.max_n_steps), self.n_steps) // per_env_steps * per_env_steps)
+            print(new_n_steps, ratio)
+            if new_n_steps != self.n_steps:
+                self.rollout_buffer = self.buffer_cls(
+                    new_n_steps,
+                    self.observation_space,
+                    self.action_space,
+                    device=self.device,
+                    gamma=self.gamma,
+                    gae_lambda=self.gae_lambda,
+                    n_envs=self.n_envs,
+                )
+                self.int_rollout_buffer = RolloutBufferWithNext(
+                    new_n_steps,
+                    self.observation_space,
+                    self.action_space,
+                    device=self.device,
+                    gamma=self.int_gamma,
+                    gae_lambda=self.gae_lambda,
+                    n_envs=self.n_envs,
+                )
+                self.n_steps = new_n_steps
+                
+                
+
 
     def learn(
         self: SelfPPO,
@@ -474,6 +536,12 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         tb_log_name: str = "PPO",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        eval_env: GymEnv = None,
+        evaluation: bool = False,
+        eval_interval: int = 5000,
+        eval_episodes: int = 10,
+        target_folder: str = None,
+        filename: str = 'DEFAULT'
     ) -> SelfPPO:
 
         return super().learn(
@@ -483,4 +551,10 @@ class OSPOEContinuous(OnPolicyAlgorithm):
             tb_log_name=tb_log_name,
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
+            eval_env=eval_env,
+            evaluation=evaluation,
+            eval_interval=eval_interval,
+            eval_episodes=eval_episodes,
+            target_folder=target_folder,
+            filename=filename
         )

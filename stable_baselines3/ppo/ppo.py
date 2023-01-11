@@ -293,6 +293,7 @@ class PPO(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
+        
 
     def learn(
         self: SelfPPO,
@@ -302,6 +303,12 @@ class PPO(OnPolicyAlgorithm):
         tb_log_name: str = "PPO",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        eval_env: GymEnv = None,
+        evaluation: bool = False,
+        eval_interval: int = 5000,
+        eval_episodes: int = 10,
+        target_folder: str = None,
+        filename: str = 'DEFAULT'
     ) -> SelfPPO:
 
         return super().learn(
@@ -311,4 +318,10 @@ class PPO(OnPolicyAlgorithm):
             tb_log_name=tb_log_name,
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
+            eval_env=eval_env,
+            evaluation=evaluation,
+            eval_interval=eval_interval,
+            eval_episodes=eval_episodes,
+            target_folder=target_folder,
+            filename=filename
         )

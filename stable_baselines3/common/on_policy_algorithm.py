@@ -1,10 +1,12 @@
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
+import os
 
 import gym
 import numpy as np
 import torch as th
+import copy
 
 from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.buffers import DictRolloutBuffer, RolloutBuffer
@@ -12,7 +14,8 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.policies import ActorCriticPolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean
-from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env import VecEnv, VecNormalize
+from stable_baselines3.common.evaluation import evaluate_policy
 
 SelfOnPolicyAlgorithm = TypeVar("SelfOnPolicyAlgorithm", bound="OnPolicyAlgorithm")
 
@@ -108,6 +111,7 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         self.set_random_seed(self.seed)
 
         buffer_cls = DictRolloutBuffer if isinstance(self.observation_space, gym.spaces.Dict) else RolloutBuffer
+        self.buffer_cls = buffer_cls
 
         self.rollout_buffer = buffer_cls(
             self.n_steps,
@@ -181,9 +185,9 @@ class OnPolicyAlgorithm(BaseAlgorithm):
             self.state_history.append(list(self._last_obs))
             self.action_history.append(list(clipped_actions))
             self.reward_history.append(list(rewards))
-            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/state', self.state_history)
-            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/action', self.action_history)
-            np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/reward', self.reward_history)
+            # np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/state', self.state_history)
+            # p.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/action', self.action_history)
+            # np.save('/home/ywang3/workplace/width/Width-bonus/stable-baselines3/traj_log/reward', self.reward_history)
             self.num_timesteps += env.num_envs
 
             # Give access to local variables
@@ -240,6 +244,13 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         tb_log_name: str = "OnPolicyAlgorithm",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        # add parameters for evaluations
+        eval_env: GymEnv = None,
+        evaluation: bool = False,
+        eval_interval: int = 5000,
+        eval_episodes: int = 10,
+        target_folder: str = None,
+        filename: str = 'DEFAULT'
     ) -> SelfOnPolicyAlgorithm:
         iteration = 0
 
@@ -252,6 +263,16 @@ class OnPolicyAlgorithm(BaseAlgorithm):
         )
 
         callback.on_training_start(locals(), globals())
+        
+        evaluation_mean = []
+        evaluation_std = []
+        rollout_mean = []
+        if not os.path.exists(target_folder):
+            os.makedirs(target_folder)
+        
+        target_filename_mean = f'{target_folder}/{filename}_mean.npy'
+        target_filename_std = f'{target_folder}/{filename}_std.npy'
+        target_filename_rollout = f'{target_folder}/{filename}_rollout.npy'
 
         while self.num_timesteps < total_timesteps:
 
@@ -278,6 +299,31 @@ class OnPolicyAlgorithm(BaseAlgorithm):
                 self.logger.dump(step=self.num_timesteps)
 
             self.train()
+            
+            # first time exceeding each eval interval
+            if len(self.ep_info_buffer) > 0 and len(self.ep_info_buffer[0]) > 0:
+                rollout_mean.append(safe_mean([ep_info["r"] for ep_info in self.ep_info_buffer]))
+                np.save(target_filename_rollout, rollout_mean)
+            
+            if evaluation:
+                assert eval_env is not None, 'Need to provide an evaluation environment'
+                assert target_folder is not None, 'Need to provide a folder to store the evaluation results'
+                
+                if isinstance(eval_env, VecNormalize) and isinstance(self.env, VecNormalize):
+                    eval_env.obs_rms = copy.deepcopy(self.env.obs_rms)
+                    eval_env.training = False
+                
+                if self.num_timesteps % eval_interval <= (self.n_steps * self.n_envs):
+                    # print(eval)
+                    mean, std = evaluate_policy(self.policy, eval_env, deterministic=False)
+                
+                    evaluation_mean.append(mean)
+                    evaluation_std.append(std)
+                    # print(mean, std)
+                    np.save(target_filename_mean, evaluation_mean)
+                    np.save(target_filename_std, evaluation_std)
+                print(f'Last evaluation : mean {mean : .3f} std {std : .3f}')
+                
 
         callback.on_training_end()
 

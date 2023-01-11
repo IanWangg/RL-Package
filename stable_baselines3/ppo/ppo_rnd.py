@@ -94,6 +94,9 @@ class RND(OnPolicyAlgorithm):
                 spaces.MultiBinary,
             ),
         )
+        
+        from stable_baselines3.common.running_mean_std import RunningMeanStd
+        self.int_rewards_normalizer = RunningMeanStd(shape=())
 
         # Sanity check, otherwise it will lead to noisy gradient and NaN
         # because of the advantage normalization
@@ -255,6 +258,10 @@ class RND(OnPolicyAlgorithm):
                 new_obs_tensor = obs_as_tensor(new_obs, self.device)
                 int_rewards = self.compute_int_rewards(new_obs_tensor.float())
                 int_rewards = int_rewards.cpu().numpy()
+            
+            # normalize int rewards
+            # self.int_rewards_normalizer.update(int_rewards)
+            # int_rewards = int_rewards / (np.sqrt(self.int_rewards_normalizer.var + 1e-8))
 
             self.num_timesteps += env.num_envs
 
@@ -295,7 +302,9 @@ class RND(OnPolicyAlgorithm):
             values = self.policy.predict_values(obs_as_tensor(new_obs, self.device))
 
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
-
+        int_values = self.int_value_head(obs_as_tensor(new_obs, self.device)).detach()
+        self.int_rollout_buffer.compute_returns_and_advantage(last_values=int_values, dones=dones)
+        
         callback.on_rollout_end()
 
         return True
@@ -342,10 +351,13 @@ class RND(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
-                advantages = 2 * advantages + int_advantages # follow the RND original implementation
+                # print(f'========== {int_advantages.mean()} ===============')
+                advantages = advantages + int_advantages # follow the RND original implementation
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                # advantages = 2 * advantages + int_advantages
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = th.exp(log_prob - rollout_data.old_log_prob)
@@ -374,7 +386,7 @@ class RND(OnPolicyAlgorithm):
                 value_losses.append(value_loss.item())
                 
                 int_values_pred = self.int_value_head(int_rollout_data.observations.float())
-                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred)
+                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred) * 5
                 int_value_losses.append(int_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -455,6 +467,12 @@ class RND(OnPolicyAlgorithm):
         tb_log_name: str = "PPO",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
+        eval_env: GymEnv = None,
+        evaluation: bool = False,
+        eval_interval: int = 5000,
+        eval_episodes: int = 10,
+        target_folder: str = None,
+        filename: str = 'DEFAULT'
     ) -> SelfPPO:
 
         return super().learn(
@@ -464,4 +482,10 @@ class RND(OnPolicyAlgorithm):
             tb_log_name=tb_log_name,
             reset_num_timesteps=reset_num_timesteps,
             progress_bar=progress_bar,
+            eval_env=eval_env,
+            evaluation=evaluation,
+            eval_interval=eval_interval,
+            eval_episodes=eval_episodes,
+            target_folder=target_folder,
+            filename=filename
         )
