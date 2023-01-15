@@ -52,6 +52,7 @@ class RND(OnPolicyAlgorithm):
         gamma: float = 0.99,
         int_gamma: float = 0.99,
         gae_lambda: float = 0.95,
+        extra_bonus: bool = False,
         clip_range: Union[float, Schedule] = 0.2,
         clip_range_vf: Union[None, float, Schedule] = None,
         normalize_advantage: bool = True,
@@ -132,6 +133,7 @@ class RND(OnPolicyAlgorithm):
         
         self.rnd_learning_rate = rnd_learning_rate
         self.int_gamma = int_gamma
+        self.extra_bonus = extra_bonus
 
         if _init_setup_model:
             self._setup_model()
@@ -352,10 +354,14 @@ class RND(OnPolicyAlgorithm):
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
                 # print(f'========== {int_advantages.mean()} ===============')
-                advantages = advantages + int_advantages # follow the RND original implementation
+                # print(int_advantages.mean())
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                advantages = advantages + int_advantages # follow the RND original implementation
+                # advantages = 2 * advantages + int_advantages
                 # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
                 # advantages = 2 * advantages + int_advantages
 
@@ -456,8 +462,8 @@ class RND(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.record("bonus/rnd_loss", rnd_losses)
-        self.logger.record("bonus/int_value_loss", int_value_losses)
+        # self.logger.record("bonus/rnd_loss", rnd_losses)
+        # self.logger.record("bonus/int_value_loss", int_value_losses)
 
     def learn(
         self: SelfPPO,

@@ -54,6 +54,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         sparse_sampling: bool = False,
         use_extra_value_head: bool = True,
         gae_lambda: float = 0.95,
+        extra_bonus: bool = False,
         clip_range: Union[float, Schedule] = 0.2,
         clip_range_vf: Union[None, float, Schedule] = None,
         normalize_advantage: bool = True,
@@ -134,12 +135,14 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         
         self.rnd_learning_rate = rnd_learning_rate
         self.int_gamma = int_gamma
+        self.extra_bonus = extra_bonus
         self.sparse_sampling = sparse_sampling
         self.use_extra_value_head = use_extra_value_head
         
         # keep track of how many MC sampling session has been done
         self.sampling_count = 0
         self.max_n_steps = int(2 * self.n_steps)
+        self.initial_steps = self.n_steps
 
         if _init_setup_model:
             self._setup_model()
@@ -283,8 +286,8 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 int_rewards = self.compute_int_rewards(obs_tensor.float(), actions_tensor.float())
                 int_rewards = int_rewards.cpu().numpy()
                 
-            # self.int_rewards_normalizer.update(int_rewards)
-            # int_rewards = int_rewards / (np.sqrt(self.int_rewards_normalizer.var + 1e-8))
+            self.int_rewards_normalizer.update(int_rewards)
+            int_rewards = int_rewards / (np.sqrt(self.int_rewards_normalizer.var + 1e-8))
 
             self.num_timesteps += env.num_envs
 
@@ -381,11 +384,17 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
-                advantages = advantages + int_advantages # follow the RND original implementation
+
+                # print(int_advantages.mean())
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
                 # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                if self.extra_bonus:
+                    advantages = advantages + 2 * int_advantages
+                else:
+                    advantages = advantages + int_advantages # follow the RND original implementation
                 # advantages = 2 * advantages + int_advantages
 
                 # ratio between old and new policy, should be one at the first iteration
@@ -500,9 +509,14 @@ class OSPOEContinuous(OnPolicyAlgorithm):
         if self.sparse_sampling:
             # ratio = 1 - self.gamma ** self.sampling_count
             self.sampling_count += 1
-            ratio = 1 - self.gamma ** self.sampling_count
+            # ratio = 1 - self.gamma ** self.sampling_count
             per_env_steps = max(self.batch_size // self.n_envs, 1)
-            new_n_steps = int(max(int(ratio * self.max_n_steps), self.n_steps) // per_env_steps * per_env_steps)
+            # new_n_steps = int(max(int(ratio * self.max_n_steps), self.n_steps) // per_env_steps * per_env_steps)
+            
+            ratio = (1 + 1 / self._total_timesteps) ** self.num_timesteps
+            new_n_steps = int(min(int(ratio * self.initial_steps), self.max_n_steps) // per_env_steps * per_env_steps)
+            print(f'Current steps : {self.num_timesteps}, Total Steps : {self._total_timesteps}')
+            print(f'Initial sampels : {self.n_steps}, Current samples : {ratio * self.n_steps}, Sample Upper-bounds : {self.max_n_steps}')
             print(new_n_steps, ratio)
             if new_n_steps != self.n_steps:
                 self.rollout_buffer = self.buffer_cls(

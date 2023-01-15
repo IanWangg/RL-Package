@@ -21,11 +21,11 @@ def get_agent(agent_name, env, n_envs):
     # walker2d : 32 env, 64 steps, (OSPOE 64 env, 64 steps)
     # halfcheetah : 1 env, 2048 steps (0 ent coeff)
     batch_size = 8
-    n_steps = 256
+    n_steps = 16
     learning_rate = 1e-4
     n_epochs = 4
     clip_range = 0.2
-    gamma = 0.999
+    gamma = 0.99
     int_gamma = 0.99
     ent_coef = 0
     
@@ -85,6 +85,23 @@ def get_agent(agent_name, env, n_envs):
             ent_coef=ent_coef,
             gamma=gamma,
             int_gamma=int_gamma,
+            tensorboard_log='./mujoco_bk',
+            clip_range=clip_range,
+            n_steps=n_steps,
+            n_epochs=n_epochs,
+            batch_size=batch_size,
+            verbose=1,
+        )
+    elif agent_name == 'OSPOESparseControl':
+        model = OSPOE(
+            env=env,
+            policy='MlpPolicy',
+            learning_rate=learning_rate,
+            vf_coef=0.5,
+            ent_coef=ent_coef,
+            gamma=gamma,
+            int_gamma=int_gamma,
+            sparse_sampling=True,
             tensorboard_log='./mujoco_bk',
             clip_range=clip_range,
             n_steps=n_steps,
@@ -164,68 +181,55 @@ if __name__ == '__main__':
 
     name = args.name
     runs = 5
-    n_envs = 32
+    n_envs = 16
     assert name in ['PPO', 'PPOControl', 'RND', 'OSPOE', 'ENIAC', 'PCPG', 'RNDTest', 'RNDTest2']
 
-    env_type = 'MountainCarContinuous'
+    env_type = 'MountainCar'
     env_name = f'{env_type}-v0'
     
     
     for run in range(runs):
-        import torch as th
-        # seed the RNG for all devices (both CPU and CUDA)
-        th.manual_seed(run+100)
+        for name in ['PPO', 'RND', 'OSPOE', 'ENIAC', 'PCPG']:
+            import torch as th
+            # seed the RNG for all devices (both CPU and CUDA)
+            th.manual_seed(run+100)
 
-        th.backends.cudnn.deterministic = True
-        th.backends.cudnn.benchmark = False
+            th.backends.cudnn.deterministic = True
+            th.backends.cudnn.benchmark = False
+            
+            import random
+            import numpy as np
+            random.seed(run+100)
+            np.random.seed(run+100)
+            
         
-        import random
-        import numpy as np
-        random.seed(runs)
-        np.random.seed(runs)
-        
-        if name == 'PPO':
             env = make_vec_env(
                 env_name,
                 n_envs=n_envs,
                 seed=run+100,
-                vec_env_cls=DummyVecEnv,
+                vec_env_cls=SubprocVecEnv,
             )
-        elif name == 'OSPOE':
-            env = make_vec_env(
+            env = VecNormalize(env, norm_reward=False, clip_reward=100)
+            
+            eval_env = make_vec_env(
                 env_name,
-                n_envs=n_envs * 2,
-                seed=run+100,
-                vec_env_cls=DummyVecEnv,
+                n_envs=5,
+                seed=run,
+                vec_env_cls=SubprocVecEnv,
             )
-        else:
-            env = make_vec_env(
-                env_name,
-                n_envs=n_envs,
-                seed=run+100,
-                vec_env_cls=DummyVecEnv,
+            eval_env = VecNormalize(eval_env, training=False, norm_reward=False, clip_reward=100)
+            
+            model = get_agent(name, env, n_envs)
+            
+            model.learn(
+                total_timesteps=int(1e5),
+                tb_log_name=f'{name}-{n_envs}-{env_type.lower()}',
+                reset_num_timesteps=True,
+                # eval parameters
+                evaluation=True,
+                eval_interval=int(1e3),
+                eval_env=eval_env,
+                eval_episodes=5,
+                target_folder=f'/home/ywang3/workplace/width/RL-Package/MountainCarFinalDiscrete_eval_env{n_envs}',
+                filename=f'{name}-seed{run}'
             )
-        env = VecNormalize(env, norm_reward=False, clip_reward=100)
-        
-        eval_env = make_vec_env(
-            env_name,
-            n_envs=1,
-            seed=run,
-            vec_env_cls=DummyVecEnv,
-        )
-        eval_env = VecNormalize(eval_env, training=False, norm_reward=False, clip_reward=100)
-        
-        model = get_agent(name, env, n_envs)
-        
-        model.learn(
-            total_timesteps=int(1e4),
-            tb_log_name=f'{name}-{n_envs}-Mujoco_bk_{env_type.lower()}',
-            reset_num_timesteps=True,
-            # eval parameters
-            evaluation=True,
-            eval_interval=int(1e3),
-            eval_env=eval_env,
-            eval_episodes=5,
-            target_folder=f'/home/ywang3/workplace/width/RL-Package/Mujoco_eval_{env_type.lower()}',
-            filename=f'{name}-seed{run}'
-        )

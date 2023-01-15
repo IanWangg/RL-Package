@@ -1,0 +1,36 @@
+2023/01/13: Setting 1
+running : OSPOESparseControl, ENIAC, PPOControl
+parameters : 
+    gamma == 0.99 (hopper, walker2d, halfcheetah)
+    int_gamma == 0.99 (hopper, walker2d, halfcheetah)
+    ent_coeff == 0.0 (hopper, walker2d, halfcheetah)
+
+    * extra bonus set: adv = adv + 2 * bonus_adv (try later)
+    * normal set: adv = adv + bonus_adv
+
+
+
+(not current)
+2023/01/14: Setting 2
+running : OSPOESparseControl, ENIAC, PPOControl
+env parameters :
+    n_envs = 32
+    n_steps = 64
+parameters :
+    gamma == 0.99 (walker2d, halfcheetah)
+    gamma == 0.999 (hopper)
+    int_gamma == 0.99 (hopper, walker2d, halfcheetah)
+    ent_coeff == 0.001 (hopper, walker2d, halfcheetah)
+
+
+2023/01/14: Setting 1*
+running : OSPOESparseControl, ENIAC, PPOControl
+parameters : 
+    gamma == 0.99 (hopper, walker2d, halfcheetah)
+    int_gamma == 0.99 (hopper, walker2d, halfcheetah)
+    ent_coeff == 0.0 (hopper, walker2d, halfcheetah)
+
+    The difference between this setting and the previous setting, is that 
+    we normalize two adv term sperately
+    * extra bonus set: adv = adv + 2 * bonus_adv (try later)
+    * normal set: adv = adv + bonus_adv

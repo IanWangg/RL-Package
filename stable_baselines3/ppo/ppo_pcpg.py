@@ -381,10 +381,15 @@ class PCPG(OnPolicyAlgorithm):
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 int_advantages = int_rollout_data.advantages
-                advantages = advantages + int_advantages # follow the RND original implementation
+                # print(int_advantages.mean())
                 # Normalization does not make sense if mini batchsize == 1, see GH issue #325
                 if self.normalize_advantage and len(advantages) > 1:
                     advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                    int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
+                
+                advantages = advantages + int_advantages # follow the RND original implementation
+                # advantages = 2 * advantages + int_advantages
                 # nt_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
                 # advantages = 2 * advantages + int_advantages
 
@@ -491,8 +496,8 @@ class PCPG(OnPolicyAlgorithm):
         self.logger.record("train/clip_range", clip_range)
         if self.clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
-        self.logger.record("bonus/rnd_loss", rnd_losses)
-        self.logger.record("bonus/int_value_loss", int_value_losses)
+        # self.logger.record("bonus/rnd_loss", rnd_losses)
+        # self.logger.record("bonus/int_value_loss", int_value_losses)
 
     def learn(
         self: SelfPPO,
