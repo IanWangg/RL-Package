@@ -392,7 +392,7 @@ class RND(OnPolicyAlgorithm):
                 value_losses.append(value_loss.item())
                 
                 int_values_pred = self.int_value_head(int_rollout_data.observations.float())
-                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred) * 5
+                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred)
                 int_value_losses.append(int_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -435,7 +435,12 @@ class RND(OnPolicyAlgorithm):
                 
                 # update rnd predictor
                 obs = int_rollout_data.observations.reshape(self.observation_shape)
-                rnd_predictor_loss = F.mse_loss(self.rnd_predictor(obs), self.rnd_target(obs))
+                rnd_predictor_loss = F.mse_loss(self.rnd_predictor(obs), 
+                                                self.rnd_target(obs), reduction='none')
+                
+                mask = th.rand(len(rnd_predictor_loss), 1).to(self.device)
+                mask = (mask < 0.25).type(th.FloatTensor).to(self.device)
+                rnd_predictor_loss = (rnd_predictor_loss * mask).sum() / th.max(mask.sum(), th.Tensor([1]).to(self.device))
                 self.rnd_optimizer.zero_grad()
                 rnd_predictor_loss.backward()
                 self.rnd_optimizer.step()

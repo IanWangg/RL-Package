@@ -45,7 +45,7 @@ class PCPG(OnPolicyAlgorithm):
         policy: Union[str, Type[ActorCriticPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
-        rnd_learning_rate: Union[float, Schedule] = 1e-4,
+        rnd_learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 64,
         n_epochs: int = 10,

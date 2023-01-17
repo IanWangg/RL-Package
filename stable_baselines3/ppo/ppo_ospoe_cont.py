@@ -392,9 +392,9 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                     int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
                 # int_advantages = (int_advantages - int_advantages.mean()) / (int_advantages.std() + 1e-8)
                 if self.extra_bonus:
-                    advantages = advantages + 2 * int_advantages
+                    advantages = advantages + int_advantages
                 else:
-                    advantages = advantages + int_advantages # follow the RND original implementation
+                    advantages = 2 * advantages + 1 * int_advantages # follow the RND original implementation
                 # advantages = 2 * advantages + int_advantages
 
                 # ratio between old and new policy, should be one at the first iteration
@@ -424,7 +424,7 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 value_losses.append(value_loss.item())
                 
                 int_values_pred = self.int_value_head(int_rollout_data.observations)
-                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred) * 0.5
+                int_value_loss = F.mse_loss(int_rollout_data.returns, int_values_pred)
                 int_value_losses.append(int_value_loss.item())
 
                 # Entropy loss favor exploration
@@ -472,7 +472,13 @@ class OSPOEContinuous(OnPolicyAlgorithm):
                 obs = int_rollout_data.observations.reshape(self.observation_shape)
                 cat = th.cat([obs, actions], dim=1)
                 rnd_predictor_loss = F.mse_loss(self.rnd_predictor(cat), 
-                                                self.rnd_target(cat))
+                                                self.rnd_target(cat), reduction='none')
+                
+                mask = th.rand(len(rnd_predictor_loss), 1).to(self.device)
+                mask = (mask < 0.25).type(th.FloatTensor).to(self.device)
+                # print(mask.shape, rnd_predictor_loss.shape, mask.sum().shape)
+                rnd_predictor_loss = (rnd_predictor_loss * mask).sum() / th.max(mask.sum(), th.Tensor([1]).to(self.device))
+                
                 self.rnd_optimizer.zero_grad()
                 rnd_predictor_loss.backward()
                 th.nn.utils.clip_grad_norm_(self.rnd_predictor.parameters(), self.max_grad_norm)

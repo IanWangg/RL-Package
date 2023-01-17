@@ -34,3 +34,27 @@ parameters :
     we normalize two adv term sperately
     * extra bonus set: adv = adv + 2 * bonus_adv (try later)
     * normal set: adv = adv + bonus_adv
+
+2023/01/15: 
+running : OSPOESparseControl, ENIAC, PPOControl
+parameters: (Walker2d, Halfcheetah)
+    gamma == 0.99
+    int_gamma == 0.99
+    ent_coeff == 0.001, clip_range == 0.1
+    advatanges (int and ext) are normalized separately, total_adv = adv + 0.5 * int_adv
+    n_envs = 8, random seeds are picked by run * 8 (so no two experiments share same seeds)
+
+2023/01/15: (sparse)
+64 envs 
+batch_size = 32
+n_epochs = 10
+learning_rate = 1e-4
+clip_range = 0.2
+ent_coef = 0.001
+gamma = 0.999
+int_gamma = 0.99
+
+halfcheetah : abs(afterpos) > 15. (worked)
+hopper : (afterpos - init_pos[0]) > 1. (worked)
+walker2d : (afterpos - init_pos[0]) > 0.2 (running)
+humanoid : abs(afterpos) > 0.3 (running)
